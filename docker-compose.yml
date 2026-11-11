@@ -20,6 +20,7 @@ x-airflow-common: &airflow-common
     - RABBITMQ_HOST=clinicared_rabbitmq
   volumes:
     - ./dags:/opt/airflow/dags
+    - ../clinicared-backend/src:/opt/airflow/src:ro
 
 services:
   airflow-init:
