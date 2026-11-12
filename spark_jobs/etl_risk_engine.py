@@ -1,67 +1,60 @@
 import os
+import json
+import urllib.request
 from datetime import date
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DateType
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
 from pyspark.sql.functions import col, datediff, current_date, sum as _sum, count, when, max as _max
 
+def extract_from_api():
+    api_url = os.getenv("CLINICARED_API_URL", "").rstrip("/")
+    with urllib.request.urlopen(f"{api_url}/patients/", timeout=15) as res:
+        patients_json = json.loads(res.read().decode())
+    with urllib.request.urlopen(f"{api_url}/appointments/", timeout=15) as res:
+        appts_json = json.loads(res.read().decode())
+
+    patients_rows = [
+        (
+            p["id"],
+            f"{p['first_name']} {p['last_name']}".strip(),
+            (date.today().year - date.fromisoformat(p["date_of_birth"]).year) if p.get("date_of_birth") else None
+        )
+        for p in patients_json
+    ]
+    appts_rows = [
+        (a["id"], a["patient_id"], a["status"], date.fromisoformat(a["date"]))
+        for a in appts_json
+    ]
+    print(f"[*] Extraídos {len(patients_rows)} pacientes y {len(appts_rows)} citas reales desde AWS Fargate/RDS.")
+    return patients_rows, appts_rows
+
 def run_etl():
-    # Inicializar Spark en modo local
     spark = SparkSession.builder \
-        .appName("ClinicaRed_Risk_ETL") \
+        .appName("ClinicaRed_Risk_ETL_RDS") \
         .master("local[*]") \
         .getOrCreate()
 
-    print("[*] Spark Session iniciada en el entorno de Orquestación.")
-
-    # 1. ESQUEMAS EXPLÍCITOS (Requisito Task 4)
     patients_schema = StructType([
-        StructField("patient_id", StringType(), False),
+        StructField("patient_id", IntegerType(), False),
         StructField("name", StringType(), True),
         StructField("age", IntegerType(), True)
     ])
-
     appointments_schema = StructType([
-        StructField("appointment_id", StringType(), False),
-        StructField("patient_id", StringType(), True),
-        StructField("status", StringType(), True), 
+        StructField("appointment_id", IntegerType(), False),
+        StructField("patient_id", IntegerType(), True),
+        StructField("status", StringType(), True),
         StructField("appointment_date", DateType(), True)
     ])
 
-    # Datos crudos simulados
-    patients_data = [
-        ("P001", "Jeas Ayala", 25),
-        ("P002", "Lyan Paez", 30),
-        ("P003", "Kevin", None) # Dato nulo para probar el Cleansing
-    ]
+    patients_data, appointments_data = extract_from_api()
 
-    appointments_data = [
-        ("A1", "P001", "NO_SHOW", date(2026, 1, 15)),
-        ("A2", "P001", "NO_SHOW", date(2026, 2, 20)),
-        ("A3", "P001", "NO_SHOW", date(2026, 5, 10)),
-        ("A4", "P001", "NO_SHOW", date(2026, 8, 5)),
-        ("A5", "P002", "ATTENDED", date(2026, 10, 1)),
-        ("A6", "P009", "ATTENDED", date(2026, 11, 1)) # Paciente huérfano para probar el Join
-    ]
-
-    df_patients = spark.createDataFrame(patients_data, schema=patients_schema)
+    df_patients = spark.createDataFrame(patients_data, schema=patients_schema).dropna(subset=["age"])
     df_appointments = spark.createDataFrame(appointments_data, schema=appointments_schema)
 
-    # 2. CLEANSING
-    print("[*] Limpiando datos corruptos o nulos...")
-    df_patients_clean = df_patients.dropna(subset=["age"])
+    df_joined = df_appointments.join(df_patients, on="patient_id", how="inner")
+    df_transformed = df_joined.withColumn("is_no_show", when(col("status") == "NO_SHOW", 1).otherwise(0))
 
-    # 3. JOINS
-    print("[*] Cruzando citas con pacientes válidos...")
-    df_joined = df_appointments.join(df_patients_clean, on="patient_id", how="inner")
-
-    # 4. TRANSFORMATIONS & AGGREGATIONS
-    print("[*] Calculando métricas de riesgo...")
-    df_transformed = df_joined.withColumn(
-        "is_no_show", 
-        when(col("status") == "NO_SHOW", 1).otherwise(0)
-    )
-
-    df_aggregated = df_transformed.groupBy("patient_id", "age").agg(
+    df_aggregated = df_transformed.groupBy("patient_id", "name", "age").agg(
         count("appointment_id").alias("total_appointments"),
         _sum("is_no_show").alias("historical_no_shows"),
         _max("appointment_date").alias("last_visit_date")
@@ -72,16 +65,11 @@ def run_etl():
         datediff(current_date(), col("last_visit_date"))
     ).drop("last_visit_date")
 
-    print("[*] Muestra de los datos procesados para el Motor de Riesgo:")
     df_final.show()
 
-    # 5. OPERATIONAL OUTPUTS
-    output_path = os.path.join(os.getcwd(), "spark_jobs", "output_risk_data")
-    print(f"[*] Exportando DataMart operacional en: {output_path}")
-    
+    output_path = os.path.join("/opt/airflow/spark_jobs", "output_risk_data")
     df_final.coalesce(1).write.mode("overwrite").csv(output_path, header=True)
-    
-    print("[√] Job de Spark completado exitosamente.")
+    print("[√] DataMart operacional generado con datos reales de AWS RDS.")
     spark.stop()
 
 if __name__ == "__main__":

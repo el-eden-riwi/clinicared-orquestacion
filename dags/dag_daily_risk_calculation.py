@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import logging
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ with DAG(
     tags=["clinicared", "risk_engine", "no_show"],
 ) as dag:
 
+    task_spark_etl = BashOperator(
+        task_id="run_spark_etl",
+        bash_command="python /opt/airflow/spark_jobs/etl_risk_engine.py",
+    )
+
     task_fetch = PythonOperator(
         task_id="fetch_appointments",
         python_callable=fetch_upcoming_7_days_appointments,
@@ -83,4 +89,4 @@ with DAG(
         python_callable=update_risk_in_db,
     )
 
-    task_fetch >> task_compute >> task_save
+    task_spark_etl >> task_fetch >> task_compute >> task_save

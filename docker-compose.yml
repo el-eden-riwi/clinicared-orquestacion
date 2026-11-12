@@ -1,5 +1,6 @@
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.1-python3.11
+  build: .
+  image: clinicared-airflow-spark:2.9.1
   environment:
     - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
     - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:Jeas888@clinicared_postgres:5432/clinicared_db
@@ -16,17 +17,27 @@ x-airflow-common: &airflow-common
     - AIRFLOW__SCHEDULER__PARSING_PROCESSES=1
     - AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=30
     - PYTHONPATH=/opt/airflow
-    - _PIP_ADDITIONAL_REQUIREMENTS=pika pydantic-settings
     - RABBITMQ_HOST=clinicared_rabbitmq
+    - CLINICARED_API_URL=${CLINICARED_API_URL}
+    - RDS_DB_HOST=${RDS_DB_HOST}
+    - RDS_DB_PORT=${RDS_DB_PORT}
+    - RDS_DB_NAME=${RDS_DB_NAME}
+    - RDS_DB_USER=${RDS_DB_USER}
+    - RDS_DB_PASSWORD=${RDS_DB_PASSWORD}
+    - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+    - AIRFLOW__API__ACCESS_CONTROL_ALLOW_ORIGINS=*
+    - AIRFLOW__API__ACCESS_CONTROL_ALLOW_METHODS=GET,POST,OPTIONS
+    - AIRFLOW__API__ACCESS_CONTROL_ALLOW_HEADERS=Content-Type,Authorization
   volumes:
     - ./dags:/opt/airflow/dags
     - ../clinicared-backend/src:/opt/airflow/src:ro
+    - ./spark_jobs:/opt/airflow/spark_jobs
 
 services:
   airflow-init:
     <<: *airflow-common
     container_name: clinicared_airflow_init
-    command: version && airflow db migrate && airflow users create --username admin --firstname Jeas --lastname Ayala --role Admin --email admin@clinicared.com --password admin
+    command: version && airflow db migrate && airflow users create --username admin --firstname Jeas --lastname Ayala --role Admin --email jeas@clinicared.com --password admin
     restart: on-failure
 
   airflow-webserver:
